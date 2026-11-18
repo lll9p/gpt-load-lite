@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { outboundProxiesApi } from "@/api/outbound-proxies";
+import { outboundProxiesApi, type SubscriptionStatus } from "@/api/outbound-proxies";
+import ProxySubscription from "@/components/ProxySubscription.vue";
 import type { OutboundProxy } from "@/types/models";
 import {
   NAlert,
@@ -41,6 +42,13 @@ const show = ref(false);
 const mask = ref(true);
 const notice = ref<"savedRefreshFailed" | "deletedRefreshFailed" | null>(null);
 const editingId = ref<number | null>(null);
+const editingBaseline = ref<OutboundProxy>();
+const managed = ref(false);
+const allowUrlEdit = ref(false);
+const canEditUrl = computed(() => allowUrlEdit.value && !managed.value);
+const rowMissing = computed(
+  () => editingId.value !== null && !proxies.value.some(proxy => proxy.id === editingId.value)
+);
 const form = reactive({ name: "", url: "", enabled: true });
 const formRef = ref<InstanceType<typeof NForm> | null>(null);
 const enabledCount = computed(() => proxies.value.filter(proxy => proxy.enabled).length);
@@ -205,7 +213,7 @@ async function closeEditor() {
 }
 
 async function saveBatch() {
-  if (saving.value || !canBatchSave.value || failed.value || loading.value) {
+  if (managed.value || saving.value || !canBatchSave.value || failed.value || loading.value) {
     return;
   }
   // Send every nonempty line so server skip counts include local duplicates.
@@ -258,32 +266,51 @@ function protocolLabel(raw: string): string {
   }
 }
 
-async function load() {
+let loadVersion = 0;
+async function load(silent = false) {
+  const version = ++loadVersion;
   loading.value = true;
   try {
-    proxies.value = await outboundProxiesApi.list();
-    loaded.value = true;
-    failed.value = false;
-    notice.value = null;
+    const rows = await outboundProxiesApi.list(silent);
+    if (version === loadVersion) {
+      proxies.value = rows;
+      loaded.value = true;
+      failed.value = false;
+      notice.value = null;
+    }
     return true;
   } catch {
-    failed.value = true;
+    if (version === loadVersion) {
+      failed.value = true;
+    }
     return false;
   } finally {
-    loading.value = false;
+    if (version === loadVersion) {
+      loading.value = false;
+    }
+  }
+}
+
+function setSubscriptionStatus(status?: SubscriptionStatus) {
+  managed.value = status?.mode === "subscription";
+  if (managed.value && show.value) {
+    allowUrlEdit.value = false;
+    form.url = "";
   }
 }
 
 function edit(proxy?: OutboundProxy) {
-  if (unavailable.value) {
+  if (unavailable.value || (!proxy && managed.value)) {
     return;
   }
   draft.value = "";
   batchError.value = "";
   editingId.value = proxy?.id ?? null;
+  editingBaseline.value = proxy;
+  allowUrlEdit.value = !managed.value;
   Object.assign(form, {
     name: proxy?.name ?? "",
-    url: proxy?.url ?? "",
+    url: canEditUrl.value ? (proxy?.url ?? "") : "",
     enabled: proxy?.enabled ?? true,
   });
   show.value = true;
@@ -295,6 +322,7 @@ function clearEditor() {
   mask.value = true;
   Object.assign(form, { name: "", url: "", enabled: true });
   editingId.value = null;
+  editingBaseline.value = undefined;
 }
 
 function confirmRisk(content: string, deleting = false): Promise<boolean> {
@@ -353,32 +381,39 @@ async function save() {
   saving.value = true;
   try {
     await formRef.value?.validate();
-    const previous = proxies.value.find(proxy => proxy.id === editingId.value);
-    if (editingId.value === null || !previous) {
+    const previous = editingBaseline.value;
+    if (editingId.value === null || !previous || rowMissing.value) {
       return;
     }
     const changes: Partial<Pick<OutboundProxy, "name" | "url" | "enabled">> = {};
     if (form.name.trim() !== previous.name) {
       changes.name = form.name.trim();
     }
-    if (parseProxyUrl(form.url.trim())?.canonical !== parseProxyUrl(previous.url)?.canonical) {
+    if (
+      canEditUrl.value &&
+      parseProxyUrl(form.url.trim())?.canonical !== parseProxyUrl(previous.url)?.canonical
+    ) {
       changes.url = form.url.trim();
     }
     if (form.enabled !== previous.enabled) {
       changes.enabled = form.enabled;
     }
-    if (!Object.keys(changes).length) {
-      show.value = false;
-      clearEditor();
-      return;
-    }
     if (changes.enabled === false && !(await confirmRisk(disableWarning()))) {
       return;
     }
-    await outboundProxiesApi.update(editingId.value, changes);
+    if (rowMissing.value) {
+      return;
+    }
+    if (!canEditUrl.value) {
+      delete changes.url;
+    }
+    const updated = Object.keys(changes).length > 0;
+    if (updated) {
+      await outboundProxiesApi.update(editingId.value, changes);
+    }
     show.value = false;
     clearEditor();
-    if (!(await load())) {
+    if (updated && !(await load())) {
       notice.value = "savedRefreshFailed";
     }
   } catch {
@@ -389,7 +424,7 @@ async function save() {
 }
 
 async function remove(proxy: OutboundProxy) {
-  if (unavailable.value) {
+  if (unavailable.value || managed.value) {
     return;
   }
   mutatingId.value = proxy.id;
@@ -400,6 +435,9 @@ async function remove(proxy: OutboundProxy) {
         ? "deleteLastConfirm"
         : "deleteEnabledConfirm";
     if (!(await confirmRisk(t(`outboundProxies.${key}`, { name: proxy.name }), true))) {
+      return;
+    }
+    if (managed.value) {
       return;
     }
     await outboundProxiesApi.remove(proxy.id);
@@ -417,7 +455,7 @@ function validUrl(_rule: unknown, value: string) {
   return Boolean(parseProxyUrl(value.trim())) || new Error(t("outboundProxies.invalidUrl"));
 }
 
-onMounted(load);
+onMounted(() => load());
 </script>
 
 <template>
@@ -431,11 +469,18 @@ onMounted(load);
         <n-text v-else depth="3">
           {{ t(failed ? "outboundProxies.stateUnknown" : "outboundProxies.notLoaded") }}
         </n-text>
-        <n-button :disabled="unavailable" @click="edit()">{{ t("outboundProxies.add") }}</n-button>
+        <n-button :disabled="unavailable || managed" @click="edit()">
+          {{ t("outboundProxies.add") }}
+        </n-button>
+        <proxy-subscription
+          :disabled="busy"
+          @status="setSubscriptionStatus"
+          @changed="load(true)"
+        />
         <n-button :aria-expanded="expanded" :disabled="saving" @click="toggleExpanded">
           {{ t(expanded ? "outboundProxies.collapse" : "outboundProxies.expand") }}
         </n-button>
-        <n-button v-if="failed" :loading="loading" :disabled="busy" @click="load">
+        <n-button v-if="failed" :loading="loading" :disabled="busy" @click="load()">
           {{ t("outboundProxies.refresh") }}
         </n-button>
       </div>
@@ -445,7 +490,7 @@ onMounted(load);
     </n-alert>
     <n-space v-if="expanded" vertical>
       <n-space>
-        <n-button :loading="loading" :disabled="busy" @click="load">
+        <n-button :loading="loading" :disabled="busy" @click="load()">
           {{ t("outboundProxies.refresh") }}
         </n-button>
         <n-tooltip>
@@ -546,7 +591,7 @@ onMounted(load);
                     </n-button>
                     <n-button
                       size="small"
-                      :disabled="unavailable"
+                      :disabled="unavailable || managed"
                       type="error"
                       @click="remove(proxy)"
                     >
@@ -593,7 +638,7 @@ onMounted(load);
                   </n-button>
                   <n-button
                     size="small"
-                    :disabled="unavailable"
+                    :disabled="unavailable || managed"
                     type="error"
                     @click="remove(proxy)"
                   >
@@ -618,7 +663,10 @@ onMounted(load);
     :close-on-esc="!saving && !confirming"
     @after-leave="!show && clearEditor()"
   >
-    <n-space v-if="editingId === null" vertical>
+    <n-alert v-if="(editingId === null && managed) || rowMissing" type="warning">
+      {{ t(rowMissing ? "proxySubscription.rowMissing" : "proxySubscription.managed") }}
+    </n-alert>
+    <n-space v-else-if="editingId === null" vertical>
       <n-text depth="3">{{ t("outboundProxies.batchHelp", { count: preview.length }) }}</n-text>
       <n-input
         v-model:value="draft"
@@ -644,7 +692,7 @@ onMounted(load);
       </n-text>
       <n-alert v-if="batchError" type="warning">
         {{ batchError }}
-        <n-button :loading="loading" :disabled="saving || loading" @click="load">
+        <n-button :loading="loading" :disabled="saving || loading" @click="load()">
           {{ t("outboundProxies.refresh") }}
         </n-button>
       </n-alert>
@@ -683,6 +731,7 @@ onMounted(load);
         <n-input v-model:value="form.name" />
       </n-form-item>
       <n-form-item
+        v-if="canEditUrl"
         :label="t('outboundProxies.url')"
         path="url"
         :rule="[
@@ -712,7 +761,7 @@ onMounted(load);
         <n-button
           type="primary"
           :loading="saving"
-          :disabled="saving || (editingId === null && !canBatchSave)"
+          :disabled="saving || rowMissing || (editingId === null && (managed || !canBatchSave))"
           @click="editingId === null ? saveBatch() : save()"
         >
           {{

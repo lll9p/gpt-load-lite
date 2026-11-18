@@ -58,7 +58,7 @@ func NewApp(buildFS embed.FS, indexPage []byte) (_ *App, err error) {
 		return nil, err
 	}
 	if err := database.AutoMigrate(
-		&models.SystemSetting{}, &models.Group{}, &models.OutboundProxy{},
+		&models.SystemSetting{}, &models.Group{}, &models.OutboundProxy{}, &models.OutboundProxySubscription{},
 		&models.APIKey{}, &models.RequestLog{}, &models.GroupHourlyStat{},
 	); err != nil {
 		return nil, fmt.Errorf("database schema migration failed: %w", err)
@@ -86,6 +86,9 @@ func NewApp(buildFS embed.FS, indexPage []byte) (_ *App, err error) {
 	if err := proxyManager.Reload(); err != nil {
 		return nil, fmt.Errorf("failed to load outbound proxies: %w", err)
 	}
+	if err := proxyManager.LoadSubscription(configManager.GetEncryptionKey() != ""); err != nil {
+		return nil, fmt.Errorf("failed to load outbound proxy subscription: %w", err)
+	}
 	channels := channel.NewFactory(settings, clients, proxyManager)
 	validator := keypool.NewKeyValidator(keypool.KeyValidatorParams{
 		DB: database, ChannelFactory: channels, SettingsManager: settings,
@@ -111,7 +114,7 @@ func NewApp(buildFS embed.FS, indexPage []byte) (_ *App, err error) {
 	serverConfig := configManager.GetEffectiveServerConfig()
 	return &App{
 		configManager: configManager, db: sqlDB, keyService: keys,
-		logService: logs, cronChecker: cron,
+		logService: logs, cronChecker: cron, proxyManager: proxyManager,
 		httpServer: &http.Server{
 			Addr: fmt.Sprintf("%s:%d", serverConfig.Host, serverConfig.Port), Handler: engine,
 			ReadTimeout:    time.Duration(serverConfig.ReadTimeout) * time.Second,

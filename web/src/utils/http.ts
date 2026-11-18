@@ -9,6 +9,7 @@ const noLoadingUrls = ["/tasks/status"];
 declare module "axios" {
   interface AxiosRequestConfig {
     hideMessage?: boolean;
+    silent?: boolean;
   }
 }
 
@@ -21,7 +22,7 @@ const http = axios.create({
 // 请求拦截器
 http.interceptors.request.use(config => {
   // 检查当前请求的 URL 是否在屏蔽列表中
-  if (config.url && !noLoadingUrls.includes(config.url)) {
+  if (!config.silent && config.url && !noLoadingUrls.includes(config.url)) {
     appState.loading = true;
   }
   const authKey = localStorage.getItem("authKey");
@@ -37,22 +38,27 @@ http.interceptors.request.use(config => {
 // 响应拦截器
 http.interceptors.response.use(
   response => {
-    appState.loading = false;
+    if (!response.config.silent) {
+      appState.loading = false;
+    }
     if (response.config.method !== "get" && !response.config.hideMessage) {
       window.$message.success(response.data.message ?? i18n.global.t("common.operationSuccess"));
     }
     return response.data;
   },
   error => {
-    appState.loading = false;
+    if (!error.config?.silent) {
+      appState.loading = false;
+    }
+    if (error.response?.status === 401 && window.location.pathname !== "/login") {
+      const { logout } = useAuthService();
+      logout();
+      window.location.href = "/login";
+    }
+    if (error.config?.silent) {
+      return Promise.reject(error);
+    }
     if (error.response) {
-      if (error.response.status === 401) {
-        if (window.location.pathname !== "/login") {
-          const { logout } = useAuthService();
-          logout();
-          window.location.href = "/login";
-        }
-      }
       window.$message.error(
         error.response.data?.message ||
           i18n.global.t("common.requestFailed", { status: error.response.status }),

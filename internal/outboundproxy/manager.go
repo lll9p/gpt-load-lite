@@ -2,6 +2,7 @@ package outboundproxy
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -38,15 +39,18 @@ func (e *InfrastructureError) Unwrap() error { return e.Cause }
 func IsInfrastructure(err error) bool        { var e *InfrastructureError; return errors.As(err, &e) }
 
 type Manager struct {
-	mu       sync.RWMutex
-	db       *gorm.DB
-	enc      encryption.Service
-	clients  *httpclient.HTTPClientManager
-	snapshot []models.OutboundProxy
+	mu                sync.RWMutex
+	db                *gorm.DB
+	enc               encryption.Service
+	clients           *httpclient.HTTPClientManager
+	snapshot          []models.OutboundProxy
+	sub               subscriptionState
+	hasEncryptionKey  bool
+	fetchSubscription func(context.Context, SubscriptionInput) ([]string, error)
 }
 
 func NewManager(db *gorm.DB, enc encryption.Service, clients *httpclient.HTTPClientManager) *Manager {
-	return &Manager{db: db, enc: enc, clients: clients}
+	return &Manager{db: db, enc: enc, clients: clients, fetchSubscription: downloadSubscription}
 }
 
 func normalize(raw string) (string, error) {
@@ -217,6 +221,9 @@ type BatchResult struct {
 func (m *Manager) CreateBatch(items []BatchItem) (*BatchResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.sub.record.Mode == "subscription" {
+		return nil, subscriptionError("online subscription manages the proxy list")
+	}
 	if len(items) == 0 || len(items) > 500 {
 		return nil, apierrors.ErrValidation
 	}
@@ -282,6 +289,7 @@ func (m *Manager) CreateBatch(items []BatchItem) (*BatchResult, error) {
 	}
 	if result.Created > 0 {
 		m.publish(rows)
+		m.invalidatePreviewLocked()
 	}
 	return result, nil
 }
@@ -299,6 +307,9 @@ func (m *Manager) Delete(id uint) error { _, err := m.mutate(id, nil, nil, nil, 
 func (m *Manager) mutate(id uint, name, raw *string, enabled *bool, remove bool) (*models.OutboundProxy, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.sub.record.Mode == "subscription" && (id == 0 || raw != nil || remove) {
+		return nil, subscriptionError("online subscription manages the proxy list")
+	}
 	var result models.OutboundProxy
 	var rows []models.OutboundProxy
 	err := m.db.Transaction(func(tx *gorm.DB) error {
@@ -357,6 +368,7 @@ func (m *Manager) mutate(id uint, name, raw *string, enabled *bool, remove bool)
 		return nil, err
 	}
 	m.publish(rows)
+	m.invalidatePreviewLocked()
 	if remove {
 		return nil, nil
 	}

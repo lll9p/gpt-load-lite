@@ -28,7 +28,7 @@ func RunMigrateKeys(args []string) {
 	// Set custom usage message
 	migrateCmd.Usage = func() {
 		fmt.Println("GPT-Load Lite Key Migration Tool")
-		fmt.Println("Migrates API keys and outbound proxy credentials together.")
+		fmt.Println("Migrates API keys, outbound proxy credentials, and the subscription URL together.")
 		fmt.Println()
 		fmt.Println("Usage:")
 		fmt.Println("  Enable encryption: gpt-load migrate-keys --to new-key")
@@ -93,11 +93,12 @@ const migrationBatchSize = 1000
 
 // MigrateKeysCommand handles encryption key migration
 type MigrateKeysCommand struct {
-	db            *gorm.DB
-	configManager types.ConfigManager
-	fromKey       string
-	toKey         string
-	hasProxyTable bool
+	db                   *gorm.DB
+	configManager        types.ConfigManager
+	fromKey              string
+	toKey                string
+	hasProxyTable        bool
+	hasSubscriptionTable bool
 }
 
 // NewMigrateKeysCommand creates a new migration command
@@ -117,10 +118,13 @@ func (cmd *MigrateKeysCommand) Execute() error {
 		return fmt.Errorf("failed to inspect database tables: %w", err)
 	}
 	cmd.hasProxyTable = false
+	cmd.hasSubscriptionTable = false
 	for _, table := range tables {
-		if table == "outbound_proxies" {
+		switch table {
+		case "outbound_proxies":
 			cmd.hasProxyTable = true
-			break
+		case "outbound_proxy_subscriptions":
+			cmd.hasSubscriptionTable = true
 		}
 	}
 
@@ -226,6 +230,9 @@ func (cmd *MigrateKeysCommand) preCheck() error {
 		return fmt.Errorf("failed to create current encryption service: %w", err)
 	}
 
+	if _, err := cmd.subscriptionURL(cmd.db, currentService); err != nil {
+		return err
+	}
 	if err := cmd.checkProxies(currentService); err != nil {
 		return err
 	}
@@ -807,6 +814,9 @@ func (cmd *MigrateKeysCommand) switchColumns() error {
 			}
 		}
 
+		if err := cmd.switchSubscriptionURL(tx); err != nil {
+			return err
+		}
 		logrus.Info("Successfully updated original table with migrated data")
 		return nil
 	})

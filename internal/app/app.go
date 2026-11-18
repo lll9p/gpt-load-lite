@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"gpt-load/internal/keypool"
+	"gpt-load/internal/outboundproxy"
 	"gpt-load/internal/services"
 	"gpt-load/internal/types"
 	"gpt-load/internal/version"
@@ -25,6 +26,7 @@ type App struct {
 	keyService    *services.KeyService
 	logService    *services.LogService
 	cronChecker   *keypool.CronChecker
+	proxyManager  *outboundproxy.Manager
 }
 
 func (a *App) GracefulShutdownTimeout() time.Duration {
@@ -43,6 +45,7 @@ func (a *App) Start() error {
 	a.configManager.DisplayServerConfig()
 	a.logService.Start()
 	a.cronChecker.Start()
+	a.proxyManager.Start()
 	go func() {
 		logrus.Infof("GPT-Load Lite %s listening on %s", version.Version, a.httpServer.Addr)
 		if err := a.httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
@@ -64,6 +67,9 @@ func (a *App) Stop(ctx context.Context) error {
 		defer cancel()
 	}
 	var shutdownErrors []error
+	if err := a.proxyManager.Stop(drainCtx); err != nil {
+		shutdownErrors = append(shutdownErrors, fmt.Errorf("outbound proxy subscription shutdown failed: %w", err))
+	}
 	if err := a.httpServer.Shutdown(drainCtx); err != nil {
 		shutdownErrors = append(shutdownErrors, fmt.Errorf("HTTP shutdown failed: %w", err))
 	}

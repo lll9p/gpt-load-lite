@@ -25,6 +25,15 @@ Fork origin: GPT-Load Lite is derived from [tbphp/gpt-load](https://github.com/t
 - **Production Ready**: Graceful shutdown, error recovery, and comprehensive security mechanisms
 - **Dual Authentication**: Separate authentication for management and proxy, with proxy authentication supporting global and group-level keys
 
+## Online Outbound Proxy Subscription
+
+In **Settings → Outbound Proxies → Online Subscription**, choose a format and enter a trusted public HTTP(S) download URL. Prefer HTTPS, especially if the URL contains a token. The server downloads the list directly, without following redirects. Set `ENCRYPTION_KEY` to store the URL; for an existing unencrypted database, follow [Data Encryption Migration](#data-encryption-migration) instead of changing the environment variable alone.
+
+- **Webshare**: one `host:port:username:password` entry per line. The default proxy protocol is `socks5h`.
+- **Proxy URL list**: one complete `http://`, `https://`, `socks5://`, or `socks5h://` proxy URL per line.
+
+Preview the changes before switching to subscription mode or changing the active source. The subscription replaces the entire pool; matching proxies retain their IDs, names, and enabled state. Switch back to manual management to keep the current list and edit it directly. You can also clear the stored download URL when saving manual mode; do so before disabling encryption. Use **Refresh now** for a one-off update or enable automatic refresh (5–1440 minutes, suggested interval: 60). Download, validation, or write failures leave the previous pool in use. Refresh follows the list from the source; it does not probe proxies for availability.
+
 ## Supported AI Services
 
 GPT-Load Lite serves as a transparent proxy service, completely preserving the native API formats of various AI service providers:

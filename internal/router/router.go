@@ -113,6 +113,10 @@ func registerProtectedAPIRoutes(api *gin.RouterGroup, serverHandler *handler.Ser
 		proxies.GET("", serverHandler.ListOutboundProxies)
 		proxies.POST("", serverHandler.CreateOutboundProxy)
 		proxies.POST("/batch", serverHandler.CreateOutboundProxyBatch)
+		proxies.GET("/subscription", serverHandler.GetOutboundProxySubscription)
+		proxies.PUT("/subscription", serverHandler.SaveOutboundProxySubscription)
+		proxies.POST("/subscription/preview", serverHandler.PreviewOutboundProxySubscription)
+		proxies.POST("/subscription/refresh", serverHandler.RefreshOutboundProxySubscription)
 		proxies.PUT("/:id", serverHandler.UpdateOutboundProxy)
 		proxies.DELETE("/:id", serverHandler.DeleteOutboundProxy)
 	}
